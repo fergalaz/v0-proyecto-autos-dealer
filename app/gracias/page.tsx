@@ -6,7 +6,7 @@ import Image from "next/image"
 
 type PollData = {
   live_status?: string
-  status?: string // aceptar cualquier string; ComfyDeploy puede variar
+  status?: string
   outputs?: Array<{ url?: string; image_url?: string; result_url?: string; [key: string]: any }>
   progress?: number
   queue_position?: number | null
@@ -21,7 +21,8 @@ export default function ThankYouPage() {
   const destino = search.get("destino") || ""
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const emailSentRef = useRef<boolean>(false)
+  const emailStartedRef = useRef<boolean>(false) // evita requests en paralelo
+  const emailSentRef = useRef<boolean>(false)    // registra éxito
 
   useEffect(() => {
     if (!runId) return
@@ -35,13 +36,11 @@ export default function ThankYouPage() {
 
     const extractImageUrl = (outputs?: any[]): string | null => {
       if (!outputs || !Array.isArray(outputs)) return null
-
       const pick = (o: any): string | null => {
         if (!o || typeof o !== "object") return null
         if (typeof o.url === "string") return o.url
         if (typeof o.image_url === "string") return o.image_url
         if (typeof o.result_url === "string") return o.result_url
-
         const d = o.data
         if (d && typeof d === "object") {
           if (Array.isArray(d.images) && d.images.length) {
@@ -68,7 +67,6 @@ export default function ThankYouPage() {
         }
         return null
       }
-
       for (const o of outputs) {
         const u = pick(o)
         if (u) return u
@@ -76,71 +74,68 @@ export default function ThankYouPage() {
       return null
     }
 
-    // Estados de éxito y terminales que he visto en ComfyDeploy/variantes
     const SUCCESS = new Set(["completed", "success", "succeeded", "done", "finished"])
-    const TERMINAL = new Set(["completed", "success", "succeeded", "done", "finished", "failed", "cancelled", "canceled"])
+    const TERMINAL = new Set([
+      "completed", "success", "succeeded", "done", "finished",
+      "failed", "cancelled", "canceled",
+    ])
+
+    const sendEmailOnce = async (imageUrl: string) => {
+      if (emailStartedRef.current || emailSentRef.current) return
+      emailStartedRef.current = true      // 🔒 bloquear duplicados inmediatamente
+      clearPolling()                       // 🛑 parar el polling antes de enviar
+
+      try {
+        const resp = await fetch("/api/send-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userEmail, imageUrl, nombreApellido, destino }),
+        })
+        const json = await resp.json().catch(() => ({}))
+        console.log("[gracias] /api/send-email respuesta:", resp.status, json)
+
+        if (resp.ok && json?.success) {
+          emailSentRef.current = true
+          console.log("[gracias] email enviado OK")
+        } else {
+          // si falla, liberar el “started” para permitir reintento
+          emailStartedRef.current = false
+          console.warn("[gracias] fallo al enviar email:", json)
+        }
+      } catch (e) {
+        emailStartedRef.current = false
+        console.error("[gracias] error enviando email:", e)
+      }
+    }
 
     const fetchAndPoll = async () => {
       try {
         const res = await fetch(`/api/poll?runId=${encodeURIComponent(runId)}`, { cache: "no-store" })
         const data: PollData = await res.json()
 
-        // logs útiles
-        // eslint-disable-next-line no-console
         console.log("[gracias] poll:", {
           status: data.status,
           live_status: data.live_status,
           outputs: Array.isArray(data.outputs) ? data.outputs.length : 0,
         })
 
-        if (data.status && TERMINAL.has(data.status.toLowerCase())) {
-          // eslint-disable-next-line no-console
-          console.log("[gracias] estado terminal:", data.status)
-          clearPolling()
+        const st = (data.status || "").toLowerCase()
+        if (st && TERMINAL.has(st)) {
+          console.log("[gracias] estado terminal:", st)
+          // no limpiamos todavía si no hemos enviado email y es un éxito
+          if (!SUCCESS.has(st)) clearPolling()
         }
 
-        if (data.status && SUCCESS.has(data.status.toLowerCase()) && !emailSentRef.current) {
+        if (st && SUCCESS.has(st) && !emailSentRef.current) {
           const foundUrl = extractImageUrl(data.outputs)
-          // eslint-disable-next-line no-console
           console.log("[gracias] éxito detectado. URL encontrada:", foundUrl)
-
-          if (foundUrl) {
-            try {
-              // Intentar envío de email
-              const resp = await fetch("/api/send-email", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userEmail, imageUrl: foundUrl, nombreApellido, destino }),
-              })
-
-              const json = await resp.json().catch(() => ({}))
-              // eslint-disable-next-line no-console
-              console.log("[gracias] /api/send-email respuesta:", resp.status, json)
-
-              if (resp.ok && json?.success) {
-                emailSentRef.current = true // solo marcamos si fue OK
-                // eslint-disable-next-line no-console
-                console.log("[gracias] email enviado OK")
-              } else {
-                // eslint-disable-next-line no-console
-                console.warn("[gracias] fallo al enviar email (no OK):", json)
-              }
-            } catch (e) {
-              // eslint-disable-next-line no-console
-              console.error("[gracias] error enviando email:", e)
-            }
-          } else {
-            // eslint-disable-next-line no-console
-            console.warn("[gracias] no se pudo extraer imageUrl de outputs")
-          }
+          if (foundUrl) await sendEmailOnce(foundUrl)
         }
       } catch (e) {
-        // eslint-disable-next-line no-console
         console.warn("[gracias] error en polling:", e)
       }
     }
 
-    // Primer intento y luego intervalos
     fetchAndPoll()
     pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
 
@@ -155,7 +150,6 @@ export default function ThankYouPage() {
         <div className="flex justify-center mb-8">
           <Image src="/images/geely-logo.png" alt="Geely" width={600} height={240} className="h-40 w-auto" />
         </div>
-
         <h1 className="text-3xl md:text-4xl font-bold">¡Gracias por participar!</h1>
         <p className="text-base md:text-lg text-muted-foreground">
           Estamos generando tu imagen personalizada. La recibirás en tu correo en cuanto esté lista.
