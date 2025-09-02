@@ -11,8 +11,7 @@ export async function POST(request: NextRequest) {
     const adminEmail = process.env.ADMIN_EMAIL
 
     if (!apiKey) return NextResponse.json({ error: "RESEND_API_KEY not configured" }, { status: 500 })
-    if (!fromEmail)
-      return NextResponse.json({ error: "RESEND_FROM not configured (must be a verified sender)" }, { status: 500 })
+    if (!fromEmail) return NextResponse.json({ error: "RESEND_FROM not configured (must be a verified sender)" }, { status: 500 })
     if (!adminEmail) return NextResponse.json({ error: "ADMIN_EMAIL not configured" }, { status: 500 })
 
     const { userEmail, imageUrl, nombreApellido, destino } = await request.json()
@@ -23,7 +22,7 @@ export async function POST(request: NextRequest) {
 
     const resend = new Resend(apiKey)
 
-    // Intentar descargar la imagen para adjuntarla; si falla, seguiremos sin adjunto (fallback)
+    // Intentar descargar la imagen para adjuntarla; si falla, se enviará solo con link
     let attachment: { filename: string; content: Buffer; contentType?: string } | undefined
 
     try {
@@ -63,7 +62,7 @@ export async function POST(request: NextRequest) {
 
     const basePayload = (to: string, subject: string, html: string) => ({
       from: fromEmail,
-      to: [to], // string[] es lo más seguro
+      to: [to],
       subject,
       html,
       ...(attachment ? { attachments: [attachment] } : {}),
@@ -78,11 +77,8 @@ export async function POST(request: NextRequest) {
     if (userRes.error || adminRes.error) {
       console.error("RESEND ERRORS:", { userError: userRes.error, adminError: adminRes.error })
       return NextResponse.json(
-        {
-          error: "Failed to send one or more emails",
-          details: { userError: userRes.error, adminError: adminRes.error },
-        },
-        { status: 502 },
+        { error: "Failed to send one or more emails", details: { userError: userRes.error, adminError: adminRes.error } },
+        { status: 502 }
       )
     }
 
