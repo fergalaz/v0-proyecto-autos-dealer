@@ -20,9 +20,13 @@ export default function ThankYouPage() {
   const nombreApellido = search.get("nombreApellido") || ""
   const destino = search.get("destino") || ""
 
+  // ComfyDeploy API token (igual que usas en page.tsx)
+  const apiToken =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlcl8ycFBrZlZQQ3E1U3BManhPd2J4ZmhDWmNuTVkiLCJpYXQiOjE3NTYwODY2MDYsIm9yZ19pZCI6Im9yZ18yYzdCNHJ4ck5zVmpqNnFiQkNYVDRmN1poU3UifQ.yftleLo4kUf11LhTPWQdS0_EsqjlS4Xo6eU4T-4UeiQ"
+
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const emailStartedRef = useRef<boolean>(false) // evita requests en paralelo
-  const emailSentRef = useRef<boolean>(false)    // registra éxito
+  const emailSentRef = useRef<boolean>(false) // registra éxito
 
   useEffect(() => {
     if (!runId) return
@@ -76,14 +80,20 @@ export default function ThankYouPage() {
 
     const SUCCESS = new Set(["completed", "success", "succeeded", "done", "finished"])
     const TERMINAL = new Set([
-      "completed", "success", "succeeded", "done", "finished",
-      "failed", "cancelled", "canceled",
+      "completed",
+      "success",
+      "succeeded",
+      "done",
+      "finished",
+      "failed",
+      "cancelled",
+      "canceled",
     ])
 
     const sendEmailOnce = async (imageUrl: string) => {
       if (emailStartedRef.current || emailSentRef.current) return
-      emailStartedRef.current = true      // 🔒 bloquear duplicados inmediatamente
-      clearPolling()                       // 🛑 parar el polling antes de enviar
+      emailStartedRef.current = true // 🔒 bloquear duplicados inmediatamente
+      clearPolling() // 🛑 parar el polling antes de enviar
 
       try {
         const resp = await fetch("/api/send-email", {
@@ -110,7 +120,11 @@ export default function ThankYouPage() {
 
     const fetchAndPoll = async () => {
       try {
-        const res = await fetch(`/api/poll?runId=${encodeURIComponent(runId)}`, { cache: "no-store" })
+        const pollUrl = new URL("/api/poll", window.location.origin)
+        pollUrl.searchParams.set("runId", runId)
+        pollUrl.searchParams.set("apiToken", apiToken) // ⬅️ VOLVIÓ EL TOKEN
+
+        const res = await fetch(pollUrl.toString(), { cache: "no-store" })
         const data: PollData = await res.json()
 
         console.log("[gracias] poll:", {
@@ -122,7 +136,6 @@ export default function ThankYouPage() {
         const st = (data.status || "").toLowerCase()
         if (st && TERMINAL.has(st)) {
           console.log("[gracias] estado terminal:", st)
-          // no limpiamos todavía si no hemos enviado email y es un éxito
           if (!SUCCESS.has(st)) clearPolling()
         }
 
