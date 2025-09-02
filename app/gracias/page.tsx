@@ -6,7 +6,7 @@ import Image from "next/image"
 
 type PollData = {
   live_status?: string
-  status?: "queued" | "processing" | "completed" | "failed" | "cancelled" | "api_error"
+  status?: string // aceptar cualquier string; ComfyDeploy puede variar
   outputs?: Array<{ url?: string; image_url?: string; result_url?: string; [key: string]: any }>
   progress?: number
   queue_position?: number | null
@@ -44,7 +44,6 @@ export default function ThankYouPage() {
 
         const d = o.data
         if (d && typeof d === "object") {
-          // Comunes en ComfyDeploy
           if (Array.isArray(d.images) && d.images.length) {
             const img = d.images[0]
             if (typeof img === "string") return img
@@ -77,37 +76,67 @@ export default function ThankYouPage() {
       return null
     }
 
+    // Estados de éxito y terminales que he visto en ComfyDeploy/variantes
+    const SUCCESS = new Set(["completed", "success", "succeeded", "done", "finished"])
+    const TERMINAL = new Set(["completed", "success", "succeeded", "done", "finished", "failed", "cancelled", "canceled"])
+
     const fetchAndPoll = async () => {
       try {
         const res = await fetch(`/api/poll?runId=${encodeURIComponent(runId)}`, { cache: "no-store" })
         const data: PollData = await res.json()
 
-        // Estados terminales típicos
-        const terminal = new Set(["completed", "failed", "cancelled"])
+        // logs útiles
+        // eslint-disable-next-line no-console
+        console.log("[gracias] poll:", {
+          status: data.status,
+          live_status: data.live_status,
+          outputs: Array.isArray(data.outputs) ? data.outputs.length : 0,
+        })
 
-        if (data.status && terminal.has(data.status)) {
+        if (data.status && TERMINAL.has(data.status.toLowerCase())) {
+          // eslint-disable-next-line no-console
+          console.log("[gracias] estado terminal:", data.status)
           clearPolling()
         }
 
-        // Disparar emails una sola vez al completar
-        if (data.status === "completed" && !emailSentRef.current) {
+        if (data.status && SUCCESS.has(data.status.toLowerCase()) && !emailSentRef.current) {
           const foundUrl = extractImageUrl(data.outputs)
+          // eslint-disable-next-line no-console
+          console.log("[gracias] éxito detectado. URL encontrada:", foundUrl)
+
           if (foundUrl) {
             try {
-              emailSentRef.current = true // candado para evitar duplicados
-              await fetch("/api/send-email", {
+              // Intentar envío de email
+              const resp = await fetch("/api/send-email", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ userEmail, imageUrl: foundUrl, nombreApellido, destino }),
               })
-            } catch {
-              // Silencioso: si el envío falla, no rompemos la pantalla de gracias
-              emailSentRef.current = false // opcional: permitir reintento si deseas
+
+              const json = await resp.json().catch(() => ({}))
+              // eslint-disable-next-line no-console
+              console.log("[gracias] /api/send-email respuesta:", resp.status, json)
+
+              if (resp.ok && json?.success) {
+                emailSentRef.current = true // solo marcamos si fue OK
+                // eslint-disable-next-line no-console
+                console.log("[gracias] email enviado OK")
+              } else {
+                // eslint-disable-next-line no-console
+                console.warn("[gracias] fallo al enviar email (no OK):", json)
+              }
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.error("[gracias] error enviando email:", e)
             }
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[gracias] no se pudo extraer imageUrl de outputs")
           }
         }
-      } catch {
-        // Errores de polling silenciosos: no interrumpen la UI
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("[gracias] error en polling:", e)
       }
     }
 
