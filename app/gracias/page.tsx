@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef } from "react"
 import { useSearchParams } from "next/navigation"
 import Image from "next/image"
 
@@ -8,6 +8,9 @@ type PollData = {
   live_status?: string
   status?: "queued" | "processing" | "completed" | "failed" | "cancelled" | "api_error"
   outputs?: Array<{ url?: string; image_url?: string; result_url?: string; [key: string]: any }>
+  progress?: number
+  queue_position?: number | null
+  error?: any
 }
 
 export default function ThankYouPage() {
@@ -18,7 +21,7 @@ export default function ThankYouPage() {
   const destino = search.get("destino") || ""
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const [emailSent, setEmailSent] = useState<boolean>(false)
+  const emailSentRef = useRef<boolean>(false)
 
   useEffect(() => {
     if (!runId) return
@@ -30,29 +33,43 @@ export default function ThankYouPage() {
       }
     }
 
-    const extractImageUrl = (outputs: any[]): string | null => {
+    const extractImageUrl = (outputs?: any[]): string | null => {
+      if (!outputs || !Array.isArray(outputs)) return null
+
       const pick = (o: any): string | null => {
-        if (o?.url) return o.url
-        if (o?.image_url) return o.image_url
-        if (o?.result_url) return o.result_url
-        const d = o?.data
-        if (d?.images?.length) {
-          const img = d.images[0]
-          if (typeof img === "string") return img
-          if (img?.url) return img.url
-          if (img?.image_url) return img.image_url
+        if (!o || typeof o !== "object") return null
+        if (typeof o.url === "string") return o.url
+        if (typeof o.image_url === "string") return o.image_url
+        if (typeof o.result_url === "string") return o.result_url
+
+        const d = o.data
+        if (d && typeof d === "object") {
+          // Comunes en ComfyDeploy
+          if (Array.isArray(d.images) && d.images.length) {
+            const img = d.images[0]
+            if (typeof img === "string") return img
+            if (img && typeof img === "object") {
+              if (typeof img.url === "string") return img.url
+              if (typeof img.image_url === "string") return img.image_url
+              if (typeof img.result_url === "string") return img.result_url
+            }
+          }
+          if (Array.isArray(d.files) && d.files.length) {
+            const f = d.files[0]
+            if (typeof f === "string") return f
+            if (f && typeof f === "object") {
+              if (typeof f.url === "string") return f.url
+              if (typeof f.file_url === "string") return f.file_url
+              if (typeof f.download_url === "string") return f.download_url
+            }
+          }
+          if (typeof d.image === "string") return d.image
+          if (typeof d.output_image === "string") return d.output_image
+          if (typeof d.result === "string") return d.result
         }
-        if (d?.files?.length) {
-          const f = d.files[0]
-          if (typeof f === "string") return f
-          if (f?.url) return f.url
-          if (f?.file_url) return f.file_url
-        }
-        if (d?.image) return d.image
-        if (d?.output_image) return d.output_image
-        if (d?.result) return d.result
         return null
       }
+
       for (const o of outputs) {
         const u = pick(o)
         if (u) return u
@@ -62,45 +79,46 @@ export default function ThankYouPage() {
 
     const fetchAndPoll = async () => {
       try {
-        const apiToken =
-          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlcl8ycFBrZlZQQ3E1U3BManhPd2J4ZmhDWmNuTVkiLCJpYXQiOjE3NTYwODY2MDYsIm9yZ19pZCI6Im9yZ18yYzdCNHJ4ck5zVmpqNnFiQkNYVDRmN1poU3UifQ.yftleLo4kUf11LhTPWQdS0_EsqjlS4Xo6eU4T-4UeiQ"
-        const pollUrl = new URL(`/api/poll`, window.location.origin)
-        pollUrl.searchParams.set("runId", runId)
-        pollUrl.searchParams.set("apiToken", apiToken)
-        const res = await fetch(pollUrl.toString(), { cache: "no-store" })
+        const res = await fetch(`/api/poll?runId=${encodeURIComponent(runId)}`, { cache: "no-store" })
         const data: PollData = await res.json()
 
-        if (data.status === "completed" && !emailSent) {
+        // Estados terminales típicos
+        const terminal = new Set(["completed", "failed", "cancelled"])
+
+        if (data.status && terminal.has(data.status)) {
           clearPolling()
-          const found = extractImageUrl(data.outputs || [])
-          if (found) {
+        }
+
+        // Disparar emails una sola vez al completar
+        if (data.status === "completed" && !emailSentRef.current) {
+          const foundUrl = extractImageUrl(data.outputs)
+          if (foundUrl) {
             try {
+              emailSentRef.current = true // candado para evitar duplicados
               await fetch("/api/send-email", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userEmail, imageUrl: found, nombreApellido, destino }),
+                body: JSON.stringify({ userEmail, imageUrl: foundUrl, nombreApellido, destino }),
               })
-              setEmailSent(true)
             } catch {
-              // fallo silencioso, no mostramos nada en la UI
+              // Silencioso: si el envío falla, no rompemos la pantalla de gracias
+              emailSentRef.current = false // opcional: permitir reintento si deseas
             }
           }
         }
-        if (data.status === "failed") {
-          clearPolling()
-        }
       } catch {
-        // errores de polling silenciosos
+        // Errores de polling silenciosos: no interrumpen la UI
       }
     }
 
+    // Primer intento y luego intervalos
     fetchAndPoll()
     pollIntervalRef.current = setInterval(fetchAndPoll, 2000)
 
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     }
-  }, [runId, userEmail, nombreApellido, destino, emailSent])
+  }, [runId, userEmail, nombreApellido, destino])
 
   return (
     <main className="min-h-screen flex items-center justify-center p-6">
@@ -111,7 +129,7 @@ export default function ThankYouPage() {
 
         <h1 className="text-3xl md:text-4xl font-bold">¡Gracias por participar!</h1>
         <p className="text-base md:text-lg text-muted-foreground">
-          En los próximos 10 minutos recibirás tu imagen personalizada en el email que ingresaste en el formulario.
+          Estamos generando tu imagen personalizada. La recibirás en tu correo en cuanto esté lista.
         </p>
       </div>
     </main>

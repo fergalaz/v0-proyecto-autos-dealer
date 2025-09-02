@@ -11,8 +11,6 @@ import { Loader2, Upload, Camera } from "lucide-react"
 
 function WorkflowForm() {
   const router = useRouter()
-  const apiToken =
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlcl8ycFBrZlZQQ3E1U3BManhPd2J4ZmhDWmNuTVkiLCJpYXQiOjE3NTYwODY2MDYsIm9yZ19pZCI6Im9yZ18yYzdCNHJ4ck5zVmpqNnFiQkNYVDRmN1poU3UifQ.yftleLo4kUf11LhTPWQdS0_EsqjlS4Xo6eU4T-4UeiQ"
 
   const [sujetoPreview, setSujetoPreview] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -25,6 +23,7 @@ function WorkflowForm() {
 
   const compressImage = (file: File): Promise<File> => {
     return new Promise((resolve) => {
+      // Si el archivo ya pesa <=1MB, lo dejamos tal cual
       if (file.size <= 1024 * 1024) {
         resolve(file)
         return
@@ -193,7 +192,6 @@ function WorkflowForm() {
     e.preventDefault()
 
     const formData = new FormData()
-    formData.append("apiToken", apiToken)
 
     if (selectedFile) {
       formData.append("sujeto", selectedFile)
@@ -208,6 +206,7 @@ function WorkflowForm() {
     if (email) formData.append("email", email)
     if (idea) formData.append("idea", idea)
 
+    // Adjunta imagen de producto desde /public/images
     try {
       const response = await fetch("/images/geely-coolray.png")
       const blob = await response.blob()
@@ -220,7 +219,6 @@ function WorkflowForm() {
     setIsGenerating(true)
 
     try {
-      setMutationError(null)
       const res = await fetch("/api/generate", {
         method: "POST",
         body: formData,
